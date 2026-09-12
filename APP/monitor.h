@@ -9,5 +9,6 @@ typedef struct {
 } MotorDatasType;
 
 void StartMonitorTask(void *argument);
+float Monitor_GetSpeed(void);
 
 #endif

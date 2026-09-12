@@ -7,26 +7,30 @@
 #include <math.h>
 #include <stdio.h>
 
-#define SPEED_AVERAGE_WINDOW 6U
+#define MAWINDOW 12
 
-static float updateSpeedAverage(float sample)
+extern uint8_t duty_int;
+
+static MotorDatasType MotorData;
+
+float update_MA(float speedSample)
 {
-    static float samples[SPEED_AVERAGE_WINDOW] = {0.0f};
-    static float sum = 0.0f;
-    static uint32_t nextSample = 0U;
-    static uint32_t sampleCount = 0U;
+    static float samples[MAWINDOW] = {0.0f};
+    static uint32_t nextIndex = 0;
+    static uint32_t sampleCount = 0;
+    static float sampleSum = 0.0f;
 
-    sum -= samples[nextSample];
-    samples[nextSample] = sample;
-    sum += sample;
+    sampleSum -= samples[nextIndex];
+    samples[nextIndex] = speedSample;
+    sampleSum += speedSample;
 
-    nextSample = (nextSample + 1U) % SPEED_AVERAGE_WINDOW;
-    if (sampleCount < SPEED_AVERAGE_WINDOW)
+    nextIndex = (nextIndex + 1U) % MAWINDOW;
+    if (sampleCount < MAWINDOW)
     {
         sampleCount++;
     }
 
-    return sum / (float)sampleCount;
+    return sampleSum / (float)sampleCount;
 }
 
 static float calcTemp(uint16_t ADCVtempValue)
@@ -44,7 +48,7 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
 {
     char frame[160];
     int frameLength = snprintf(frame, sizeof(frame),
-        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%.3f\n",
+        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%.3f,%u\n",
         
         (double)motorData->BEMFu,
         (double)motorData->BEMFv,
@@ -57,7 +61,9 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
         (unsigned int)motorData->Hallu,
         (unsigned int)motorData->Hallv,
         (unsigned int)motorData->Hallw,
-        (double)motorData->speed);
+        (double)motorData->speed,
+        (unsigned int)duty_int
+    );
 
     if (frameLength > 0 && frameLength < (int)sizeof(frame))
     {
@@ -77,7 +83,6 @@ void StartMonitorTask(void *argument)
 
     for(;;)
     {
-        MotorDatasType MotorData;
         uint32_t tickus;
         static float speedSample;
 
@@ -90,7 +95,7 @@ void StartMonitorTask(void *argument)
             speedSample = 0.0f;
         }
 
-        MotorData.speed = speedSample;
+        MotorData.speed = update_MA(speedSample);
         MotorData.BEMFu = (float)ADC3Data[3]/4095.0 * 3.3 * 25;
         MotorData.BEMFv = (float)ADC3Data[2]/4095.0 * 3.3 * 25;
         MotorData.BEMFw = (float)ADC3Data[1]/4095.0 * 3.3 * 25;
@@ -111,5 +116,9 @@ void StartMonitorTask(void *argument)
 
         osDelay(20);
     }
+}
 
+float Monitor_GetSpeed(void)
+{
+    return MotorData.speed;
 }

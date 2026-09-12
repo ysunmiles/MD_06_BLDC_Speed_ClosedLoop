@@ -1,7 +1,10 @@
 #ifndef __MOTORCTRL_H
 #define __MOTORCTRL_H
 
-#define PWM_DUTY    10
+#define SPEED_SOLL  1000
+
+#define Kp      0.04f
+#define Ki      0.000005f
 
 typedef enum
 {

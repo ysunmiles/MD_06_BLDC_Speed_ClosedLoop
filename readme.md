@@ -1,6 +1,6 @@
 # MD_06_BLDC_Speed_ClosedLoop
 
-STM32F407 BLDC motor-control firmware based on STM32 HAL, CMSIS-RTOS V2 and FreeRTOS. The current application implements Hall-sensor six-step commutation, forward/reverse control, closed-loop speed PI control, ADC-DMA monitoring, OLED display, and UART FireWater output for VOFA+.
+STM32F407 BLDC motor-control firmware based on STM32 HAL, CMSIS-RTOS V2 and FreeRTOS. The current application implements Hall-sensor six-step commutation, forward/reverse control, closed-loop speed PI control, ADC-DMA monitoring, OLED initialization, and UART FireWater telemetry for VOFA+.
 
 ## Features
 
@@ -10,10 +10,11 @@ STM32F407 BLDC motor-control firmware based on STM32 HAL, CMSIS-RTOS V2 and Free
 - GPIO-controlled low-side phase outputs
 - Hall speed measurement using TIM5
 - 12-sample moving-average speed filter
-- PI speed controller with a target speed of `1000 rpm`
+- PI speed controller with a default target speed of `500 rpm`
 - ADC1 and ADC3 continuous conversion with circular DMA
-- OLED speed display
-- USART1 FireWater output for VOFA+
+- OLED initialization and status label
+- USART1 FireWater output for VOFA+ using TX DMA
+- USART1 receive-to-idle input for changing the speed target
 
 This is an experimental closed-loop speed-control prototype. Current limiting, robust fault handling, hardware dead-time verification, and production-grade direction-change sequencing still require further validation.
 
@@ -21,11 +22,12 @@ This is an experimental closed-loop speed-control prototype. Current limiting, r
 
 1. `main()` initializes GPIO, DMA, USART1, ADC1, ADC3, TIM1, and TIM5.
 2. `MX_FREERTOS_Init()` creates `MonitorTask` and `MotorCtrlTask`.
-3. `MonitorTask` starts ADC1/ADC3 DMA and waits for Hall-period notifications.
-4. `HAL_GPIO_EXTI_Callback()` measures the time between Hall transitions with TIM5 and notifies `MonitorTask`.
-5. `MonitorTask` calculates speed, applies the moving-average filter, updates ADC measurements, sends a FireWater frame, and refreshes the OLED.
+3. `MonitorTask` starts ADC1/ADC3 DMA and USART1 receive-to-idle reception.
+4. `HAL_GPIO_EXTI_Callback()` measures the time between Hall transitions with TIM5 and updates the filtered speed.
+5. `MonitorTask` calculates the ADC-derived measurements, sends a FireWater frame, and yields for 1 ms.
 6. TIM1 update interrupts call `MotorCtrl_PWMCallback()`, which calculates PI duty and applies the current Hall commutation state.
-7. The two buttons notify `MotorCtrlTask` to start or stop forward/reverse operation.
+7. `HAL_UARTEx_RxEventCallback()` parses an ASCII integer received on USART1 and uses it as the new speed target.
+8. The two buttons notify `MotorCtrlTask` to start or stop forward/reverse operation.
 
 ## Motor Control
 
@@ -68,29 +70,38 @@ PWM        = 168 MHz / 21 / 400 = 20 kHz
 | U/V/W high-side PWM | PA8 / PA9 / PA10 | TIM1 channels 1 / 2 / 3 |
 | U/V/W low-side outputs | PB13 / PB14 / PB15 | GPIO outputs |
 | OLED SCL/SDA | PD14 / PD0 | Software GPIO interface |
+| USART1 TX/RX | PB6 / PB7 | 1152000 baud, FireWater telemetry and speed commands |
 
 Verify the driver IC enable polarity before powering the motor. The firmware controls the driver through `CTRL_SD` and stops the motor by disabling PWM channels and resetting all low-side GPIO outputs.
 
 ## VOFA+ FireWater Output
 
-USART1 is configured for **115200 baud, 8 data bits, no parity, 1 stop bit**. Each line contains the following 13 comma-separated values:
+USART1 is configured for **1152000 baud, 8 data bits, no parity, 1 stop bit**. Telemetry is transmitted through USART1 TX DMA on DMA2 Stream 7, Channel 4. Each line contains the following 11 comma-separated values:
 
 ```text
-BEMFu,BEMFv,BEMFw,Iu,Iv,Iw,Vbus,temp,Hallu,Hallv,Hallw,speed,duty
+BEMFu,BEMFv,BEMFw,Iu,Iv,Iw,Vbus,temp,hall,speed,duty
 ```
 
 Example:
 
 ```text
-12.345,12.346,12.347,1.200,1.201,1.202,24.000,35.600,1,0,1,1000.000,35
+12.345,12.346,12.347,1.200,1.201,1.202,24.000,35.600,5,500.000,35
 ```
 
-In VOFA+, select the serial port, set the baud rate to 115200, and choose the FireWater protocol. The first eight fields and `speed` are floating-point values; the three Hall fields are logic levels; `duty` is the integer TIM1 compare value, with a full scale of `400`.
+In VOFA+, select the serial port, set the baud rate to 1152000, and choose the FireWater protocol. The first eight fields and `speed` are floating-point values; `hall` is the packed Hall state (`1` through `6` for valid commutation states); `duty` is the integer TIM1 compare value, with a full scale of `400`.
+
+To change the speed target, send an ASCII decimal integer on USART1, for example:
+
+```text
+750
+```
+
+The receive buffer accepts up to seven characters. The command is parsed with `atoi()`, so send only a decimal speed value.
 
 ## Project Layout
 
 - `APP/motorCtrl.c`: Hall commutation, direction control, PI speed control, and driver control
-- `APP/monitor.c`: Hall speed measurement, moving-average filtering, ADC-DMA acquisition, OLED update, and FireWater UART output
+- `APP/monitor.c`: ADC-DMA acquisition, telemetry formatting, USART1 DMA transmit, and speed-target reception
 - `APP/monitor.h`: `MotorDatasType` definition
 - `Core/`: STM32CubeMX-generated initialization, interrupts, and RTOS setup
 - `BSP/`: OLED driver

@@ -10,6 +10,7 @@
 #include "motorCtrl.h"
 
 static uint8_t uartRxBuffer[8];
+static char frame[160];
 
 static float calcTemp(uint16_t ADCVtempValue)
 {
@@ -24,7 +25,6 @@ static float calcTemp(uint16_t ADCVtempValue)
 
 static void SendMotorDataFireWater(const MotorDatasType *motorData)
 {
-    char frame[160];
     int frameLength = snprintf(frame, sizeof(frame),
         "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%3u\n",
         
@@ -41,10 +41,7 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
         (unsigned int)motorData->duty
     );
 
-    if (frameLength > 0 && frameLength < (int)sizeof(frame))
-    {
-        HAL_UART_Transmit(&huart1, (uint8_t *)frame, (uint16_t)frameLength, 10);
-    }
+    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)frame, frameLength);
 }
 
 void StartMonitorTask(void *argument)
@@ -76,10 +73,7 @@ void StartMonitorTask(void *argument)
 
         SendMotorDataFireWater(&MotorData);
 
-        // OLED_ShowString(1, 7, "          ");
-        // OLED_ShowFloat(1, 7, MotorData.speed, 2);
-
-        // osDelay(20);
+        osDelay(1);
     }
 
 }

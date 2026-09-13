@@ -6,6 +6,7 @@
 #include "OLED.h"
 #include <math.h>
 #include <stdio.h>
+#include "motorCtrl.h"
 
 #define MAWINDOW 12
 
@@ -48,7 +49,7 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
 {
     char frame[160];
     int frameLength = snprintf(frame, sizeof(frame),
-        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%.3f,%u\n",
+        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%u\n",
         
         (double)motorData->BEMFu,
         (double)motorData->BEMFv,
@@ -58,9 +59,7 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
         (double)motorData->Iw,
         (double)motorData->Vbus,
         (double)motorData->temp,
-        (unsigned int)motorData->Hallu,
-        (unsigned int)motorData->Hallv,
-        (unsigned int)motorData->Hallw,
+        (unsigned int)motorData->hallSignal,
         (double)motorData->speed,
         (unsigned int)duty_int
     );
@@ -105,16 +104,14 @@ void StartMonitorTask(void *argument)
         MotorData.Iw = ((float)ADC1Data[0]/4095.0 * 3.3 - 1.25)/0.12;
         MotorData.Vbus = (float)ADC1Data[3]/4095.0 * 3.3 * 25;
 
-        MotorData.Hallu = HAL_GPIO_ReadPin(HALLU_GPIO_Port, HALLU_Pin);
-        MotorData.Hallv = HAL_GPIO_ReadPin(HALLV_GPIO_Port, HALLV_Pin);
-        MotorData.Hallw = HAL_GPIO_ReadPin(HALLW_GPIO_Port, HALLW_Pin);
+        MotorData.hallSignal = MotorCtrl_GetHall();
 
         SendMotorDataFireWater(&MotorData);
 
         OLED_ShowString(1, 7, "          ");
         OLED_ShowFloat(1, 7, MotorData.speed, 2);
 
-        osDelay(20);
+        // osDelay(10);
     }
 }
 

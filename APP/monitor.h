@@ -5,7 +5,7 @@
 
 typedef struct {
     float BEMFu, BEMFv, BEMFw, Iu, Iv, Iw, Vbus, temp, speed;
-    uint8_t Hallu, Hallv, Hallw;
+    uint8_t hallSignal;
 } MotorDatasType;
 
 void StartMonitorTask(void *argument);

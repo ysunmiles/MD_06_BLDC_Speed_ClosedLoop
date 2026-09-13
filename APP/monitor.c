@@ -6,33 +6,10 @@
 #include "OLED.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "motorCtrl.h"
 
-#define MAWINDOW 12
-
-extern uint8_t duty_int;
-
-static MotorDatasType MotorData;
-
-float update_MA(float speedSample)
-{
-    static float samples[MAWINDOW] = {0.0f};
-    static uint32_t nextIndex = 0;
-    static uint32_t sampleCount = 0;
-    static float sampleSum = 0.0f;
-
-    sampleSum -= samples[nextIndex];
-    samples[nextIndex] = speedSample;
-    sampleSum += speedSample;
-
-    nextIndex = (nextIndex + 1U) % MAWINDOW;
-    if (sampleCount < MAWINDOW)
-    {
-        sampleCount++;
-    }
-
-    return sampleSum / (float)sampleCount;
-}
+static uint8_t uartRxBuffer[8];
 
 static float calcTemp(uint16_t ADCVtempValue)
 {
@@ -49,7 +26,7 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
 {
     char frame[160];
     int frameLength = snprintf(frame, sizeof(frame),
-        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%u\n",
+        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%3u\n",
         
         (double)motorData->BEMFu,
         (double)motorData->BEMFv,
@@ -59,9 +36,9 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
         (double)motorData->Iw,
         (double)motorData->Vbus,
         (double)motorData->temp,
-        (unsigned int)motorData->hallSignal,
+        (unsigned int)motorData->hall,
         (double)motorData->speed,
-        (unsigned int)duty_int
+        (unsigned int)motorData->duty
     );
 
     if (frameLength > 0 && frameLength < (int)sizeof(frame))
@@ -79,22 +56,13 @@ void StartMonitorTask(void *argument)
     static uint16_t ADC3Data[4] = {0};
     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)ADC1Data, 4);
     HAL_ADC_Start_DMA(&hadc3, (uint32_t*)ADC3Data, 4);
+    HAL_UARTEx_ReceiveToIdle_IT(&huart1, uartRxBuffer, sizeof(uartRxBuffer));
 
     for(;;)
     {
-        uint32_t tickus;
-        static float speedSample;
+        static MotorDatasType MotorData;
 
-        if (xTaskNotifyWait(0, UINT32_MAX, &tickus, pdMS_TO_TICKS(500)) == pdTRUE)
-        {
-            speedSample = (float)60e6/(tickus*6*2);
-        }
-        else
-        {
-            speedSample = 0.0f;
-        }
-
-        MotorData.speed = update_MA(speedSample);
+        MotorData.speed = MotorCtrl_GetSpeed();
         MotorData.BEMFu = (float)ADC3Data[3]/4095.0 * 3.3 * 25;
         MotorData.BEMFv = (float)ADC3Data[2]/4095.0 * 3.3 * 25;
         MotorData.BEMFw = (float)ADC3Data[1]/4095.0 * 3.3 * 25;
@@ -103,19 +71,27 @@ void StartMonitorTask(void *argument)
         MotorData.Iv = ((float)ADC1Data[1]/4095.0 * 3.3 - 1.25)/0.12;
         MotorData.Iw = ((float)ADC1Data[0]/4095.0 * 3.3 - 1.25)/0.12;
         MotorData.Vbus = (float)ADC1Data[3]/4095.0 * 3.3 * 25;
-
-        MotorData.hallSignal = MotorCtrl_GetHall();
+        MotorData.hall = MotorCtrl_GetHall();
+        MotorData.duty = MotorCtrl_GetDuty();
 
         SendMotorDataFireWater(&MotorData);
 
-        OLED_ShowString(1, 7, "          ");
-        OLED_ShowFloat(1, 7, MotorData.speed, 2);
+        // OLED_ShowString(1, 7, "          ");
+        // OLED_ShowFloat(1, 7, MotorData.speed, 2);
 
-        // osDelay(10);
+        // osDelay(20);
     }
+
 }
 
-float Monitor_GetSpeed(void)
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-    return MotorData.speed;
+    if (huart == &huart1)
+    {
+        uartRxBuffer[Size < sizeof(uartRxBuffer) ? Size : sizeof(uartRxBuffer) - 1U] = '\0';
+        uint16_t uartSpeed = (uint16_t)atoi((char *)uartRxBuffer);
+
+        MotorCtrl_SetSpeedAim(uartSpeed);
+        HAL_UARTEx_ReceiveToIdle_IT(&huart1, uartRxBuffer, sizeof(uartRxBuffer));
+    }
 }

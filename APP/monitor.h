@@ -5,10 +5,10 @@
 
 typedef struct {
     float BEMFu, BEMFv, BEMFw, Iu, Iv, Iw, Vbus, temp, speed;
-    uint8_t hallSignal;
+    uint8_t hall;
+    uint16_t duty;
 } MotorDatasType;
 
 void StartMonitorTask(void *argument);
-float Monitor_GetSpeed(void);
 
 #endif

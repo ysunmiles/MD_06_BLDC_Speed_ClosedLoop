@@ -2,42 +2,84 @@
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
+#include "OLED.h"
 #include "motorCtrl.h"
-#include "monitor.h"
+
+static uint8_t lastHallSignal = 0xFF;
 
 static volatile uint8_t motorState;
-static uint8_t lastHallSignal = 0xFF;
-static volatile MotorDirection motorDirection = MOTOR_DIR_FORWARD;
-uint8_t duty_int = 0;
+static MotorDirection motorDirection = MOTOR_DIR_FORWARD;
+static uint16_t duty = 10;
+static float speed, speedSample = 0;
+static float speedAim = 500;
 
-// 测试用
-// float duty_set = 4 * 10;
-
+static float Kp = 0.002;
+static float Ki = 0.00005;
 static float intgr = 0;
-
-MotorDirection MotorCtrl_GetDirection(void)
-{
-    return motorDirection;
-}
 
 void MotorCtrl_SetShutdown(GPIO_PinState State)
 {
     HAL_GPIO_WritePin(CTRL_SD_GPIO_Port, CTRL_SD_Pin, State);
 }
 
+void MotorCtrl_SetSpeedAim(uint16_t cmdSpeed)
+{
+    speedAim = (float)cmdSpeed;
+}
+
+void MotorCtrl_SetDuty(uint16_t uartDuty)
+{
+    duty = uartDuty;
+}
+uint16_t MotorCtrl_GetDuty(void)
+{
+    return duty;
+}
+uint16_t MotorCtrl_GetSpeed(void)
+{
+    return (uint16_t)speed;
+}
+
+
+static float updateSpeedAverage(float sample)
+{
+    static float samples[SPEED_AVERAGE_WINDOW] = {0.0f};
+    static float sum = 0.0f;
+    static uint32_t nextSample = 0U;
+    static uint32_t sampleCount = 0U;
+
+    sum -= samples[nextSample];
+    samples[nextSample] = sample;
+    sum += sample;
+
+    nextSample = (nextSample + 1U) % SPEED_AVERAGE_WINDOW;
+    if (sampleCount < SPEED_AVERAGE_WINDOW)
+    {
+        sampleCount++;
+    }
+
+    return sum / (float)sampleCount;
+}
+
+void MotorCtrl_SetSpeedZero(void)
+{
+    speedSample = 0;
+    speed = updateSpeedAverage(speedSample);
+    HAL_TIM_Base_Start_IT(&htim5);
+}
+
 void MotorCtrl_Reset(void)
 {
+    HAL_TIM_Base_Stop(&htim1);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
     HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_RESET);
-    HAL_TIM_Base_Stop(&htim1);
-    HAL_TIM_PWM_Stop_IT(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Stop_IT(&htim1, TIM_CHANNEL_2);
-    HAL_TIM_PWM_Stop_IT(&htim1, TIM_CHANNEL_3);
-    __HAL_TIM_SET_COUNTER(&htim1, 0);
 }
 
-void MotorCtrl_DriveMotor(uint8_t rotateDirection, uint8_t duty,uint8_t hallSignal)
+void MotorCtrl_DriveMotor(uint8_t hallSignal)
 {
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty);
@@ -45,62 +87,73 @@ void MotorCtrl_DriveMotor(uint8_t rotateDirection, uint8_t duty,uint8_t hallSign
 
     if (hallSignal == lastHallSignal){
         return;
+    }else{
+        lastHallSignal = hallSignal;
     }
 
     MotorCtrl_Reset();
-    if (rotateDirection == 1){
-        if (hallSignal == 5 || lastHallSignal == 4) { // U+ V-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_1);
-            HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 1 || lastHallSignal == 5) { // U+ W-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_1);
-            HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 3 || lastHallSignal == 1) { // V+ W-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_2);
-            HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 2 || lastHallSignal == 3) { // V+ U-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_2);
-            HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 6 || lastHallSignal == 2) { // W+ U-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_3);
-            HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 4 || lastHallSignal == 6) { // W+ V-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_3);
-            HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
-        }
-    }
-    else if (rotateDirection == 2) {
-        if (hallSignal == 5 || lastHallSignal == 1) {   // V+ U-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_2);
-            HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 4 || lastHallSignal == 5) { // V+ W-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_2);
-            HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 6 || lastHallSignal == 4) { // U+ W-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_1);
-            HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 2 || lastHallSignal == 6) { // U+ V-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_1);
-            HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 3 || lastHallSignal == 2) { // W+ V-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_3);
-            HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
-        }
-        else if (hallSignal == 1 || lastHallSignal == 3) { // W+ U-
-            HAL_TIM_PWM_Start_IT(&htim1, TIM_CHANNEL_3);
-            HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
+    if (motorDirection == 1)
+    {
+        switch (hallSignal) {
+            case 5: // U+ V-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
+                break;
+            case 1: // U+ W-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
+                break;
+            case 3: // V+ W-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
+                break;
+            case 2: // V+ U-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
+                break;
+            case 6: // W+ U-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+                HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
+                break;
+            case 4: // W+ V-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+                HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
+                break;
+            default:
+                break;
         }
     }
-    lastHallSignal = hallSignal;
+    else if (motorDirection == 2)
+    {
+        switch (hallSignal) {
+            case 5: // V+ U-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
+                break;
+            case 1: // W+ U-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+                HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
+                break;
+            case 3: // W+ V-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+                HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
+                break;
+            case 2: // U+ V-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
+                break;
+            case 6: // U+ W-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
+                break;
+            case 4: // V+ W-
+                HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_SET);
+                break;
+            default:
+                break;
+        }
+    }
     HAL_TIM_Base_Start_IT(&htim1);
 }
 
@@ -108,7 +161,6 @@ void StartMotorCtrlTask(void *argument)
 {
     for(;;)
     {
-        // 按钮检测、开始驱动
         uint8_t keyValue = ulTaskNotifyTake(pdTRUE, osWaitForever);
         lastHallSignal = 0xFF;
         intgr = 0;
@@ -118,7 +170,7 @@ void StartMotorCtrlTask(void *argument)
             {
                 motorDirection = MOTOR_DIR_FORWARD;
                 MotorCtrl_SetShutdown(GPIO_PIN_SET);
-                MotorCtrl_PWMCallback(motorDirection);
+                MotorCtrl_PWMCallback();
                 motorState = 1;
             }
             else if (motorState == 1)
@@ -134,7 +186,7 @@ void StartMotorCtrlTask(void *argument)
             {
                 motorDirection = MOTOR_DIR_REVERSE;
                 MotorCtrl_SetShutdown(GPIO_PIN_SET);
-                MotorCtrl_PWMCallback(motorDirection);
+                MotorCtrl_PWMCallback();
                 motorState = 2;
             }
             else if (motorState == 2)
@@ -161,15 +213,16 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     else if (GPIO_Pin & (HALLU_Pin|HALLV_Pin|HALLW_Pin))
     {
         static uint32_t tickus = 0;
-        HAL_TIM_Base_Stop(&htim5);
+        HAL_TIM_Base_Stop_IT(&htim5);
         tickus = __HAL_TIM_GET_COUNTER(&htim5);
         if (tickus == 0) {   
-            HAL_TIM_Base_Start(&htim5);
-            return;}
-
-        xTaskNotifyFromISR(MonitorTaskHandle, (uint32_t)tickus, eSetValueWithOverwrite, pdFALSE);
+            HAL_TIM_Base_Start_IT(&htim5);
+            return;
+        }
+        speedSample = (float)60e6/(tickus*6*2);
+        speed = updateSpeedAverage(speedSample);
         __HAL_TIM_SET_COUNTER(&htim5, 0);
-        HAL_TIM_Base_Start(&htim5);
+        HAL_TIM_Base_Start_IT(&htim5);
     }
 }
 
@@ -180,35 +233,26 @@ uint8_t MotorCtrl_GetHall(void)
     hallv = HAL_GPIO_ReadPin(HALLV_GPIO_Port, HALLV_Pin);
     hallw = HAL_GPIO_ReadPin(HALLW_GPIO_Port, HALLW_Pin);
 
-    uint8_t hallSignal = (hallu<<2)|(hallv<<1)|(hallw);
+    uint8_t hallSignal = (hallw<<2)|(hallv<<1)|(hallu);
     return hallSignal;
 }
 
-float MotorCtrl_CalcDuty(float speed)
+void MotorCtrl_CalcDuty(void)
 {
-    float diff = SPEED_SOLL - speed;
-    float duty_p = Kp * diff;
-    intgr += diff;
+    float speed_diff = speedAim - speed;
+    float duty_p = Kp * speed_diff;
+    intgr += speed_diff;
     float duty_i = Ki * intgr;
 
-    float duty = duty_p + duty_i;
-    if (duty > 100) {duty = 100;}
-    else if (duty < 0) {duty = 0;}
-    return duty;
+    duty = duty_p + duty_i;
 }
 
-void MotorCtrl_PWMCallback(MotorDirection direction)
+void MotorCtrl_PWMCallback(void)
 {
-    // 获取当前速度
-    float speed = Monitor_GetSpeed();
-    // 根据当前速度使用PI计算占空比
-    float duty = MotorCtrl_CalcDuty(speed);
-    // 测试用
-    // static float duty_set = 4 * 10;
-    // duty = duty_set;
-    duty_int = (uint8_t)duty;
-    // 获取当前转子位置（hall信号）
+    // 获取hall信号
     uint8_t hallSignal = MotorCtrl_GetHall();
-    // 基于正反转、hall信号、占空比应值设定磁矢量
-    MotorCtrl_DriveMotor((uint8_t)direction, (uint8_t)duty, hallSignal);
+    // 计算duty
+    MotorCtrl_CalcDuty();
+    // 通过hall信号设定磁矢量
+    MotorCtrl_DriveMotor(hallSignal);
 }

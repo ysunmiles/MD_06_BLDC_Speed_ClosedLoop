@@ -1,10 +1,7 @@
 #ifndef __MOTORCTRL_H
 #define __MOTORCTRL_H
 
-#define SPEED_SOLL  1000
-
-#define Kp      0.03f
-#define Ki      0.000005f
+#define SPEED_AVERAGE_WINDOW 6U
 
 typedef enum
 {
@@ -12,8 +9,17 @@ typedef enum
     MOTOR_DIR_REVERSE = 2
 } MotorDirection;
 
-uint8_t MotorCtrl_GetHall(void);
+
+
+void MotorCtrl_PWMCallback(void);
+
 MotorDirection MotorCtrl_GetDirection(void);
-void MotorCtrl_PWMCallback(MotorDirection direction);
+uint8_t MotorCtrl_GetHall(void);
+uint16_t MotorCtrl_GetSpeed(void);
+void MotorCtrl_SetDuty(uint16_t uartDuty);
+uint16_t MotorCtrl_GetDuty(void);
+void MotorCtrl_SetSpeedZero(void);
+
+void MotorCtrl_SetSpeedAim(uint16_t cmdSpeed);
 
 #endif

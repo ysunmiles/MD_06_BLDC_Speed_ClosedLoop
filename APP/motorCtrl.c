@@ -5,43 +5,48 @@
 #include "OLED.h"
 #include "motorCtrl.h"
 
-static uint8_t lastHallSignal = 0xFF;
+static MotorDataType MotorData = {
+	.MotorState = MOTOR_STOP,
+	.SpeedAim = 500,
+	.HallSignal = 0xFF,
+};
 
-static volatile uint8_t motorState;
-static MotorDirection motorDirection = MOTOR_DIR_FORWARD;
-static uint16_t duty = 10;
-static float speed, speedSample = 0;
-static float speedAim = 500;
-
-static float Kp = 0.002;
-static float Ki = 0.00005;
+static float Kp = 1;
+static float Ki = 0.05;
 static float intgr = 0;
+static uint8_t lastHallSignal = 0xFF;
+static float speedSample = 0;
 
-void MotorCtrl_SetShutdown(GPIO_PinState State)
+static void updateSpeedAverage(void);
+static void MotorCtrl_CalcDuty(void);
+
+static void MotorCtrl_SetShutdown(GPIO_PinState State)
 {
     HAL_GPIO_WritePin(CTRL_SD_GPIO_Port, CTRL_SD_Pin, State);
 }
 
+// 从串口接收速度指令
 void MotorCtrl_SetSpeedAim(uint16_t cmdSpeed)
 {
-    speedAim = (float)cmdSpeed;
+    MotorData.SpeedAim = (float)cmdSpeed;
+}
+// 转速计时器溢出时调用
+void MotorCtrl_SetSpeedZero(void)
+{
+    speedSample = 0;
+    updateSpeedAverage();
+    HAL_TIM_Base_Start_IT(&htim5);
+	
+	MotorCtrl_CalcDuty();
 }
 
-void MotorCtrl_SetDuty(uint16_t uartDuty)
+// 外部调用状态信息结构体接口
+MotorDataType* MotorCtrl_GetData(void)
 {
-    duty = uartDuty;
-}
-uint16_t MotorCtrl_GetDuty(void)
-{
-    return duty;
-}
-uint16_t MotorCtrl_GetSpeed(void)
-{
-    return (uint16_t)speed;
+	return &MotorData;
 }
 
-
-static float updateSpeedAverage(float sample)
+static void updateSpeedAverage(void)
 {
     static float samples[SPEED_AVERAGE_WINDOW] = {0.0f};
     static float sum = 0.0f;
@@ -49,8 +54,8 @@ static float updateSpeedAverage(float sample)
     static uint32_t sampleCount = 0U;
 
     sum -= samples[nextSample];
-    samples[nextSample] = sample;
-    sum += sample;
+    samples[nextSample] = speedSample;
+    sum += speedSample;
 
     nextSample = (nextSample + 1U) % SPEED_AVERAGE_WINDOW;
     if (sampleCount < SPEED_AVERAGE_WINDOW)
@@ -58,17 +63,10 @@ static float updateSpeedAverage(float sample)
         sampleCount++;
     }
 
-    return sum / (float)sampleCount;
+    MotorData.Speed = sum / (float)sampleCount;
 }
 
-void MotorCtrl_SetSpeedZero(void)
-{
-    speedSample = 0;
-    speed = updateSpeedAverage(speedSample);
-    HAL_TIM_Base_Start_IT(&htim5);
-}
-
-void MotorCtrl_Reset(void)
+static void MotorCtrl_Reset(void)
 {
     HAL_TIM_Base_Stop(&htim1);
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
@@ -79,22 +77,22 @@ void MotorCtrl_Reset(void)
     HAL_GPIO_WritePin(PWM_WL_GPIO_Port, PWM_WL_Pin, GPIO_PIN_RESET);
 }
 
-void MotorCtrl_DriveMotor(uint8_t hallSignal)
+static void MotorCtrl_DriveMotor()
 {
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, duty);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, MotorData.Duty);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, MotorData.Duty);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, MotorData.Duty);
 
-    if (hallSignal == lastHallSignal){
+    if (MotorData.HallSignal == lastHallSignal){
         return;
     }else{
-        lastHallSignal = hallSignal;
+        lastHallSignal = MotorData.HallSignal;
     }
 
     MotorCtrl_Reset();
-    if (motorDirection == 1)
+    if (MotorData.MotorState == MOTOR_ROTATE_FORWARD)
     {
-        switch (hallSignal) {
+        switch (MotorData.HallSignal) {
             case 5: // U+ V-
                 HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
                 HAL_GPIO_WritePin(PWM_VL_GPIO_Port, PWM_VL_Pin, GPIO_PIN_SET);
@@ -123,9 +121,9 @@ void MotorCtrl_DriveMotor(uint8_t hallSignal)
                 break;
         }
     }
-    else if (motorDirection == 2)
+    else if (MotorData.MotorState == MOTOR_ROTATE_REVERSE)
     {
-        switch (hallSignal) {
+        switch (MotorData.HallSignal) {
             case 5: // V+ U-
                 HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
                 HAL_GPIO_WritePin(PWM_UL_GPIO_Port, PWM_UL_Pin, GPIO_PIN_SET);
@@ -157,6 +155,45 @@ void MotorCtrl_DriveMotor(uint8_t hallSignal)
     HAL_TIM_Base_Start_IT(&htim1);
 }
 
+static void MotorCtrl_CalcSpeed(void)
+{
+    static uint32_t tickus = 0;
+    HAL_TIM_Base_Stop_IT(&htim5);
+    tickus = __HAL_TIM_GET_COUNTER(&htim5);
+    if (tickus == 0) {   
+        HAL_TIM_Base_Start_IT(&htim5);
+        return;
+    }
+    speedSample = (float)60e6/(tickus*6*2);
+    updateSpeedAverage();
+    __HAL_TIM_SET_COUNTER(&htim5, 0);
+    HAL_TIM_Base_Start_IT(&htim5);
+}
+
+static void MotorCtrl_GetHall(void)
+{
+    uint8_t hallu, hallv, hallw;
+    hallu = HAL_GPIO_ReadPin(HALLU_GPIO_Port, HALLU_Pin);
+    hallv = HAL_GPIO_ReadPin(HALLV_GPIO_Port, HALLV_Pin);
+    hallw = HAL_GPIO_ReadPin(HALLW_GPIO_Port, HALLW_Pin);
+
+    MotorData.HallSignal = (hallw<<2)|(hallv<<1)|(hallu);
+}
+
+static void MotorCtrl_CalcDuty(void)
+{
+    float speed_diff = MotorData.SpeedAim - MotorData.Speed;
+    float duty_p = Kp * speed_diff;
+    intgr += speed_diff;
+    float duty_i = Ki * intgr;
+
+    MotorData.Duty = duty_p + duty_i;
+	if (MotorData.Duty > (8400-1)) {MotorData.Duty = 8400-1;}
+	else if (MotorData.Duty < 300) {MotorData.Duty = 300;}
+}
+
+
+
 void StartMotorCtrlTask(void *argument)
 {
     for(;;)
@@ -166,35 +203,37 @@ void StartMotorCtrlTask(void *argument)
         intgr = 0;
         if (keyValue == 1)
         {
-            if (motorState==0 || motorState==2)
+            if (MotorData.MotorState==MOTOR_STOP || MotorData.MotorState==MOTOR_ROTATE_REVERSE)
             {
-                motorDirection = MOTOR_DIR_FORWARD;
+                MotorData.MotorState = MOTOR_ROTATE_FORWARD;
                 MotorCtrl_SetShutdown(GPIO_PIN_SET);
+				MotorCtrl_CalcDuty();
                 MotorCtrl_PWMCallback();
-                motorState = 1;
+				HAL_TIM_Base_Start_IT(&htim5);
             }
-            else if (motorState == 1)
+            else if (MotorData.MotorState == MOTOR_ROTATE_FORWARD)
             {
+				MotorData.MotorState = MOTOR_STOP;
                 MotorCtrl_Reset();
                 MotorCtrl_SetShutdown(GPIO_PIN_RESET);
-                motorState = 0;
             }
         }
         else if (keyValue == 2)
         {
-            if (motorState==0 || motorState==1)
+            if (MotorData.MotorState==MOTOR_STOP || MotorData.MotorState==MOTOR_ROTATE_FORWARD)
             {
-                motorDirection = MOTOR_DIR_REVERSE;
+                MotorData.MotorState = MOTOR_ROTATE_REVERSE;
                 MotorCtrl_SetShutdown(GPIO_PIN_SET);
+				MotorCtrl_CalcDuty();
                 MotorCtrl_PWMCallback();
-                motorState = 2;
+				HAL_TIM_Base_Start_IT(&htim5);
             }
-            else if (motorState == 2)
+            else if (MotorData.MotorState == MOTOR_ROTATE_REVERSE)
             {
+				MotorData.MotorState = MOTOR_STOP;
                 MotorCtrl_Reset();
                 MotorCtrl_SetShutdown(GPIO_PIN_RESET);
-                motorState = 0;
-            }
+			}
         }
     }
 }
@@ -212,47 +251,17 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
     else if (GPIO_Pin & (HALLU_Pin|HALLV_Pin|HALLW_Pin))
     {
-        static uint32_t tickus = 0;
-        HAL_TIM_Base_Stop_IT(&htim5);
-        tickus = __HAL_TIM_GET_COUNTER(&htim5);
-        if (tickus == 0) {   
-            HAL_TIM_Base_Start_IT(&htim5);
-            return;
-        }
-        speedSample = (float)60e6/(tickus*6*2);
-        speed = updateSpeedAverage(speedSample);
-        __HAL_TIM_SET_COUNTER(&htim5, 0);
-        HAL_TIM_Base_Start_IT(&htim5);
+        // 速度采样、滤波
+        MotorCtrl_CalcSpeed();
+		// PI控制器计算duty
+		MotorCtrl_CalcDuty();
     }
-}
-
-uint8_t MotorCtrl_GetHall(void)
-{
-    uint8_t hallu, hallv, hallw;
-    hallu = HAL_GPIO_ReadPin(HALLU_GPIO_Port, HALLU_Pin);
-    hallv = HAL_GPIO_ReadPin(HALLV_GPIO_Port, HALLV_Pin);
-    hallw = HAL_GPIO_ReadPin(HALLW_GPIO_Port, HALLW_Pin);
-
-    uint8_t hallSignal = (hallw<<2)|(hallv<<1)|(hallu);
-    return hallSignal;
-}
-
-void MotorCtrl_CalcDuty(void)
-{
-    float speed_diff = speedAim - speed;
-    float duty_p = Kp * speed_diff;
-    intgr += speed_diff;
-    float duty_i = Ki * intgr;
-
-    duty = duty_p + duty_i;
 }
 
 void MotorCtrl_PWMCallback(void)
 {
-    // 获取hall信号
-    uint8_t hallSignal = MotorCtrl_GetHall();
-    // 计算duty
-    MotorCtrl_CalcDuty();
-    // 通过hall信号设定磁矢量
-    MotorCtrl_DriveMotor(hallSignal);
+	// 获取hall信号
+	MotorCtrl_GetHall();
+	// 基于hall信号控制磁矢量
+	MotorCtrl_DriveMotor();
 }

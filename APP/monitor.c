@@ -23,22 +23,22 @@ static float calcTemp(uint16_t ADCVtempValue)
     return temperatureK - 273.15f;
 }
 
-static void SendMotorDataFireWater(const MotorDatasType *motorData)
+static void SendMotorDataFireWater(const MotorDataType* pMotorData)
 {
     int frameLength = snprintf(frame, sizeof(frame),
         "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.3f,%3u\n",
         
-        (double)motorData->BEMFu,
-        (double)motorData->BEMFv,
-        (double)motorData->BEMFw,
-        (double)motorData->Iu,
-        (double)motorData->Iv,
-        (double)motorData->Iw,
-        (double)motorData->Vbus,
-        (double)motorData->temp,
-        (unsigned int)motorData->hall,
-        (double)motorData->speed,
-        (unsigned int)motorData->duty
+        (double)pMotorData->BEMFu,
+        (double)pMotorData->BEMFv,
+        (double)pMotorData->BEMFw,
+        (double)pMotorData->Iu,
+        (double)pMotorData->Iv,
+        (double)pMotorData->Iw,
+        (double)pMotorData->Vbus,
+        (double)pMotorData->Temp,
+        (unsigned int)pMotorData->HallSignal,
+        (double)pMotorData->Speed,
+        (unsigned int)pMotorData->Duty
     );
 
     HAL_UART_Transmit_DMA(&huart1, (uint8_t*)frame, frameLength);
@@ -47,7 +47,7 @@ static void SendMotorDataFireWater(const MotorDatasType *motorData)
 void StartMonitorTask(void *argument)
 {
     OLED_Init();
-    OLED_ShowString(1, 1, "speed:");
+    OLED_ShowString(1, 1, "state:");
     
     static uint16_t ADC1Data[4] = {0};
     static uint16_t ADC3Data[4] = {0};
@@ -57,21 +57,18 @@ void StartMonitorTask(void *argument)
 
     for(;;)
     {
-        static MotorDatasType MotorData;
+        MotorDataType* pMotorData = MotorCtrl_GetData();
 
-        MotorData.speed = MotorCtrl_GetSpeed();
-        MotorData.BEMFu = (float)ADC3Data[3]/4095.0 * 3.3 * 25;
-        MotorData.BEMFv = (float)ADC3Data[2]/4095.0 * 3.3 * 25;
-        MotorData.BEMFw = (float)ADC3Data[1]/4095.0 * 3.3 * 25;
-        MotorData.temp = calcTemp(ADC3Data[0]);
-        MotorData.Iu = ((float)ADC1Data[2]/4095.0 * 3.3 - 1.25)/0.12;
-        MotorData.Iv = ((float)ADC1Data[1]/4095.0 * 3.3 - 1.25)/0.12;
-        MotorData.Iw = ((float)ADC1Data[0]/4095.0 * 3.3 - 1.25)/0.12;
-        MotorData.Vbus = (float)ADC1Data[3]/4095.0 * 3.3 * 25;
-        MotorData.hall = MotorCtrl_GetHall();
-        MotorData.duty = MotorCtrl_GetDuty();
+        pMotorData->BEMFu = (float)ADC3Data[3]/4095.0 * 3.3 * 25;
+        pMotorData->BEMFv = (float)ADC3Data[2]/4095.0 * 3.3 * 25;
+        pMotorData->BEMFw = (float)ADC3Data[1]/4095.0 * 3.3 * 25;
+        pMotorData->Iu = ((float)ADC1Data[2]/4095.0 * 3.3 - 1.25)/0.12;
+        pMotorData->Iv = ((float)ADC1Data[1]/4095.0 * 3.3 - 1.25)/0.12;
+        pMotorData->Iw = ((float)ADC1Data[0]/4095.0 * 3.3 - 1.25)/0.12;
+        pMotorData->Temp = calcTemp(ADC3Data[0]);
+        pMotorData->Vbus = (float)ADC1Data[3]/4095.0 * 3.3 * 25;
 
-        SendMotorDataFireWater(&MotorData);
+        SendMotorDataFireWater(pMotorData);
 
         osDelay(1);
     }
